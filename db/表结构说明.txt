@@ -1,0 +1,386 @@
+timing.db 表结构说明
+====================
+生成日期: 2026-10-27
+配套文件: schema.sql (DDL) / import_csv.py (初始导入, 截止 2026-10-20)
+后续日期 (2026-10-21 起) 由 fetch/实盘链路写入, 作为测试窗口
+
+--------------------------------------------------------------------
+通用约定
+--------------------------------------------------------------------
+1. 日期一律 TEXT 存 ISO8601 格式 (如 2026-10-20), 不用 INTEGER 纪元或 REAL
+2. 金额单位: 两融类为元, 市值类为亿元, 股本为亿股, 与主数据 CSV 口径一致
+3. 成交量单位: 股; 换手率单位: %
+4. NaN/空值一律存 NULL, 不存 NaN
+5. WAL 模式; 备份用 VACUUM INTO, 勿直接复制 db-wal 之外的文件
+6. 权限分层: raw(抓取脚本写) / derived(build脚本写) / state(run_daily写) / meta(抓取与自检写)
+7. 训练/回测/报表只读 v_features_final, 不直读 features_main
+
+
+--------------------------------------------------------------------
+第一层  raw 原始层 (4 张表, 只增不改, 幂等 upsert)
+--------------------------------------------------------------------
+
+【1】index_daily  量价主表
+作用: 全部品种日线行情的单一事实源。
+      status 状态机把盘中 provisional bar 与 final bar 隔离,
+      从机制上杜绝"盘中快照污染训练数据"(2026-10-27 事件的教训)。
+写入者: fetch 脚本; 读取者: build 脚本 / as_of 查询。
+
+  code        TEXT    品种代码, 如 000852.SH (PK 之一)
+  date        TEXT    交易日 ISO8601 (PK 之一)
+  open        REAL    开盘价 (指数点位)
+  high        REAL    最高价
+  low         REAL    最低价
+  close       REAL    收盘价
+  volume      REAL    成交量(股), REAL 而非 INTEGER 是为兼容 NaN
+  amount      REAL    成交额(元)
+  turnover    REAL    换手率(%)
+  vwap        REAL    均价 = 成交额/成交量, 冗余存, 便于发现源数据均价字段错误
+  status      TEXT    provisional=盘中快照 / final=交易所定稿 (CHECK 约束)
+                      upsert 规则: final 永远覆盖 provisional; provisional 不覆盖 final
+  source      TEXT    来源通道: eastmoney / baostock / tencent
+  fetched_at  TEXT    首次抓取时间
+  finalized_at TEXT    status 翻转为 final 的时间; NULL 表示仍是 provisional
+
+索引: PRIMARY KEY(code, date); 附加索引 (date)
+
+当前数据: 000852.SH 共 3590 行, 2012-01-04 ~ 2026-10-20, 全 final, source=csmar_merged
+
+
+【2】margin_daily  两融表
+作用: 全市场两融余额的时点正确存储。
+      trade_date 与 effective_date 分列, 把"T+1 披露"从README的调度纪律
+      变成查询条件, as_of(T) 接口可系统性防未来函数。
+      融资净买入不存(由余额差分派生), 避免两份口径不一致。
+写入者: fetch 脚本; 读取者: build 脚本。
+
+  date            TEXT    数据所属交易日 T (PK 之一)
+  exch            TEXT    交易所: SH / SZ / BSE / ALL (PK 之一)
+  fin_balance     REAL    融资余额(元)
+  short_balance   REAL    融券余额(元)
+  fin_buy         REAL    融资买入额(元)
+  effective_date  TEXT    该数据实际可得交易日 = T+1, as_of 查询的过滤条件
+  source          TEXT    数据来源
+  fetched_at      TEXT    抓取时间
+
+索引: PRIMARY KEY(date, exch); 附加索引 (effective_date)
+
+当前数据: 仅 exch='ALL' 3590 行, 2012-01-04 ~ 2026-10-20 (历史来自 CSMAR 合并)
+          SH/SZ 分所口径待 fetch 链路补
+
+
+【3】market_size_daily  市场规模表
+作用: 各板块口径的总市值/股票数, 替代 data/市场规模数据.csv (59384行宽表)。
+      一行一个 (日期, 口径), 与原始 DataSgnCode 口径体系完全对齐。
+写入者: fetch 脚本; 读取者: build 脚本。
+
+  date            TEXT    交易日 (PK 之一)
+  sgn_code        INTEGER 统计口径码 (PK 之一):
+                          1=沪股票  2=沪主板A  4=科创板  5=深股票
+                          8=创业板  11=沪深股票  以及底档其余口径
+  sgn_name        TEXT    口径名冗余存, 免 join 对照表
+  listed_co       REAL    上市公司数
+  stock_num       REAL    上市股票数 (模型实际使用的字段)
+  total_shares    REAL    总股本(亿股)
+  circ_shares     REAL    流通股本(亿股)
+  mkt_value       REAL    总市值(亿元) (模型实际使用的字段)
+  circ_value      REAL    流通市值(亿元)
+  turnover1       REAL    换手率口径一(%)
+  turnover2       REAL    换手率口径二(%)
+  effective_date  TEXT    可得时点 (交易所统计当晚挂网, 一般 = T+1)
+  source          TEXT    数据来源
+  fetched_at      TEXT    抓取时间
+
+当前数据: 59358 行, 13 个口径全保留, 2008-01-02 ~ 2026-10-20
+
+
+【4】cffex_rank_raw  中金所持仓原始表
+作用: 中金所排名表逐行原样存, 不做聚合。
+      IF 多空比由视图 v_if_ratio 现算 (rank=999 合计行口径),
+      口径之争 (合计行 vs rank<=20 加总) 变成一条 SQL 的事。
+      历史导入的是聚合行 (contract='ALL'), 改造后的 fetch 将写入逐合约原始行。
+写入者: fetch 脚本; 读取者: v_if_ratio 视图。
+
+  date                TEXT    交易日 (PK 之一)
+  variety             TEXT    品种: IF / IC / IM / IH (PK 之一)
+  contract            TEXT    合约代码, 如 IF2611; 历史聚合导入存 'ALL' (PK 之一)
+  rank                INTEGER 名次 1~20 或 999 合计 (PK 之一)
+  long_open_interest  REAL    持买单量
+  short_open_interest REAL    持卖单量
+  fetched_at          TEXT    抓取时间 (中金所 15:40 挂网, effective = T+1)
+
+当前数据: 9460 行, 4 品种, 2015-02-09 ~ 2026-10-20 (全部为聚合行)
+
+
+--------------------------------------------------------------------
+第二层  derived 派生层 (3 张表, build 脚本写, DROP 可重建)
+--------------------------------------------------------------------
+
+【5】features_main  入模宽表
+作用: 模型唯一读取对象, 即原主数据 CSV 的 28 列内容物化 + 溯源两列。
+      原始数据修正后由 build_features 脚本整体重建, 不存在"忘了重建"的状态漂移。
+写入者: build 脚本; 读取者: timing_model (经 v_features_final 视图)。
+
+  date                        TEXT  PK
+  开盘价 / 最高价 / 最低价 / 收盘价   REAL  指数点位
+  换手率(%)  / 成交量(股) / 成交额(元) / 均价(元)   REAL  量价
+  沪市融资余额(元) / 深市融资余额(元) / 全市场融资余额(元)   REAL  两融余额
+  全市场融资买入额(元) / 全市场融资净买入额(元) / 全市场融券余额(元)   REAL
+                              (净买入额为余额差分的物化, 与 margin_daily 互验过)
+  沪市两融余额(元) / 深市两融余额(元) / 全市场两融余额(元)   REAL
+  板块上市公司数 / 板块上市股票数 / 板块总股本(亿股) / 板块流通股本(亿股)  REAL
+  板块总市值(亿元) / 板块流通市值(亿元)   REAL  市场规模 (sgn=11 沪深口径)
+  板块成交量(亿股) / 板块成交额(亿元) / 板块换手率(%) / 板块流通换手率(%)  REAL
+  build_hash  TEXT    对当日 raw 行集合 (量价+sgn11规模) 的 sha256 前16位, 溯源用
+  built_at    TEXT    构建时间
+
+当前数据: 3590 行 x 27 特征列, 2012-01-04 ~ 2026-10-20
+
+
+【6】emotion_panel  情绪面板
+作用: 33 列宽表 (日期+32 字段), 由三张原始情绪表 (期权IV/期权统计/期货持仓)
+      按 (日期,品种) 透视合成。策略当前只用 IF_会员多空比 一列,
+      面板整体保留为未来情绪因子留位。列名与 情绪_面板_日频.csv 完全一致。
+写入者: build 脚本 (重建); 读取者: signals。
+
+  date            TEXT PK
+  50ETF_PCR成交 / 50ETF_PCR持仓 / 50ETF_成交额万元      REAL
+  300ETF_PCR成交 / 300ETF_PCR持仓 / 300ETF_成交额万元    REAL
+  500ETF_PCR成交 / 500ETF_PCR持仓 / 500ETF_成交额万元     REAL
+                  (PCR = 认沽/认购 成交量或持仓量之比)
+  50ETF_IV平值 / 50ETF_IV虚沽 / 50ETF_IV虚购            REAL  隐含波动率
+  50ETF_IV沽购比 / 50ETF_IV偏斜                        REAL  (偏斜=虚沽IV-平值IV)
+  300ETF_IV平值 / 300ETF_IV虚沽 / 300ETF_IV虚购          REAL
+  300ETF_IV沽购比 / 300ETF_IV偏斜                      REAL
+  500ETF_IV平值 / 500ETF_IV虚沽 / 500ETF_IV虚购          REAL
+  500ETF_IV沽购比 / 500ETF_IV偏斜                      REAL
+  IF_会员多空比 / IC_会员多空比 / IM_会员多空比 / IH_会员多空比  REAL
+                  (前20会员持买单量/持卖单量, 策略在用的关键字段)
+  前20_持买单量 / 前20_持卖单量    REAL  跨合约加总的原始量
+  合约条数 / 合约数                REAL  合约轮换监测 (60->80 的跳变属正常)
+
+当前数据: 3590 行, 2012-01-04 ~ 2026-10-20
+
+
+【7】if_sentiment  IF 多空比派生表
+作用: 从 cffex_rank_raw 重建的轻表, live/signals 每日直查, 不用现算。
+      与视图 v_if_ratio 互为印证 (导入时已互验一致)。
+写入者: build 脚本; 读取者: signals.py。
+
+  date        TEXT    交易日 (PK 之一)
+  variety     TEXT    品种 (PK 之一)
+  buy_top20   REAL    该品种所有合约 rank=999 合计行买单加总
+  sell_top20  REAL    同上, 卖单加总
+  ratio       REAL    buy/sell, 即 *_会员多空比
+  n_contracts INTEGER 合约条数 = 20 x 合约个数
+
+当前数据: 9460 行, 4 品种, 2015-02-09 ~ 2026-10-20
+
+
+--------------------------------------------------------------------
+第三层  state 状态层 (3 张表, run_daily 写, 报表/看板读)
+--------------------------------------------------------------------
+
+【8】ledger  模拟盘账本 (append-only)
+作用: 模拟盘唯一真相。一条 INSERT 永不 UPDATE, 错了下一行反向冲销
+      (金融账标准做法)。与回测 pos.shift(1) 口径刻意分开。
+写入者: run_daily (append_day); 读取者: v_nav 视图 / 报表 / 看板。
+
+  txn_id       INTEGER PK AUTOINCREMENT
+  exec_date    TEXT    成交日 (T+1), 账本主日期
+  signal_date  TEXT    信号生成日 (T), 连接 signal_freeze 的键
+  target_pos   REAL    成交后目标仓位 [0,1]
+  exec_price   REAL    成交价 = 当日开盘价
+  mark_price   REAL    收盘盯市价
+  position     REAL    成交后持仓比例
+  shares       REAL    持有份额
+  cash         REAL    收盘后现金
+  equity       REAL    收盘后总权益
+  nav          REAL    净值 = equity / 初始资金
+  daily_ret    REAL    当日收益率
+  cost         REAL    当日交易成本
+  strategy_hash TEXT   生成该笔的 strategy.py 参数指纹
+                       (M3 参数若改, 历史账本能说明是哪套规则记的; 暂空待训练链路回填)
+
+索引: (exec_date), (signal_date)
+
+当前数据: 1789 行, 2019-06-04 ~ 2026-10-20 (10-21 起留给账本链路测试)
+
+
+【9】signal_freeze  信号冻结
+作用: 存"证据"不存"结论"——每天的信号连同生成它所依赖的数据快照哈希冻结,
+      上游数据修正后可精确判断哪些信号作废重算 (invalidated 标志)。
+写入者: run_daily; 读取者: 审计 / 次日开盘执行。
+
+  signal_date TEXT PK    信号日 T
+  base        REAL       M3 链路输出: 三档+众数平滑后的基准仓位 {0,0.5,1}
+  if_pct      REAL       IF 情绪 250 日滚动分位
+  a0          REAL       情绪接管后的连续仓位 (仅半仓档被替换)
+  target_pos  REAL       网格+死区后的最终目标仓位
+  input_hash  TEXT       当日输入数据快照哈希 (引用 features/build_hash 体系)
+  model_hash  TEXT       所用模型指纹 (引用 model_files)
+  frozen_at   TEXT       冻结时间
+  invalidated INTEGER    0=有效 / 1=上游数据修正后作废
+
+当前数据: 仅 1 条 (2026-09-30); 10-21/10-27 快照按约定未导入, 待实盘链路重算
+
+
+【10】model_files  模型注册表
+作用: model_registry 缺年检测与 --retrain 提示的依据表化。
+      权重本体 (.pt) 留文件系统, 库里只存路径与指纹。
+写入者: 训练流程; 读取者: model_registry / signal_freeze。
+
+  view              TEXT PK之一   pv(量价视图) / slow(资金视图)
+  year              INTEGER PK之一  训练年份
+  seed              TEXT PK之一   s0 ~ s5
+  file_path         TEXT    权重文件相对项目根目录的路径
+  train_window_hash TEXT    训练窗口数据指纹; 数据修正后据此提示 --retrain (待回填)
+  train_data_end    TEXT    训练数据末日, 判断"当年模型缺不缺" (待回填)
+  trained_at        TEXT    训练时间 (取文件mtime)
+
+当前数据: 12 个检查点 (pv/slow x 6 seed x 2026年), 含权重文件 md5
+
+
+--------------------------------------------------------------------
+第四层  meta 元数据层 (2 张表, 抓取/自检脚本写, dashboard 读)
+--------------------------------------------------------------------
+
+【11】ingest_log  抓取日志
+作用: 每次抓取一个事务写一行, 让"数据从哪来、有没有改过历史值"可审计。
+      values_changed=1 时联动触发派生层重建/提示重训。
+写入者: fetch 脚本; 读取者: dashboard / 审计。
+
+  ingest_id      INTEGER PK
+  table_name     TEXT    目标表
+  date_from      TEXT    本次抓取日期范围起
+  date_to        TEXT    范围止
+  rows_new       INTEGER 新增行数
+  rows_updated   INTEGER 更新行数
+  values_changed INTEGER 抓了老日期但数值有变(源数据修正) -> 触发重建联动
+  check_result   TEXT    JSON, 本次校验明细 (对账误差/越界检测)
+  started_at     TEXT
+  finished_at    TEXT
+
+索引: (table_name, date_from)
+
+当前数据: 空, 等 fetch 链路接库后开始累积
+
+
+【12】quality_check  日度自检表
+作用: 双通道对账/历史回检/跳空检测/两融口径核对的结果从"打印完就丢"
+      变成落库, dashboard 红绿灯直读。
+写入者: 自检脚本; 读取者: dashboard。
+
+  check_id   INTEGER PK
+  run_date   TEXT    自检运行日
+  check_type TEXT    cross_source=双通道对账 / playback=回放
+                     / gap=跳空检测 / margin_recon=两融口径核对
+  ref_date   TEXT    被检数据日
+  metric     TEXT    指标名
+  value      REAL    实测值
+  threshold  REAL    阈值
+  pass       INTEGER 0/1
+
+当前数据: 空, 等自检脚本接库后开始累积
+
+
+--------------------------------------------------------------------
+补充表  etf_daily  真实成交载体 (2026-10-27 补充, 原说明遗漏)
+--------------------------------------------------------------------
+
+【13】etf_daily  中证1000ETF 日线
+作用: 实盘/模拟盘按真实可交易标的成交。选 512100 而不是指数本身,
+      是为了把"指数点位"换成"可下单的份额", 避免指数与 ETF 之间的
+      跟踪误差和分红除权被忽略。
+写入者: db_fetch; 读取者: db_update (开盘价成交 / 收盘价盯市)。
+
+  code        TEXT    品种代码 (512100.SH) (PK 之一)
+  date        TEXT    交易日 ISO8601 (PK 之一)
+  open/high/low/close  REAL  价格(元)
+  volume      REAL    成交量(份)
+  amount      REAL    成交额(元)
+  turnover    REAL    换手率(%)
+  vwap        REAL    均价
+  status      TEXT    provisional / final, 规则同 index_daily
+  source      TEXT    数据来源
+  fetched_at  TEXT    抓取时间
+  finalized_at TEXT   定稿时间
+
+当前数据: 2421 行, 2016-11-04 ~ 2026-10-27 (2026-10-27 为 provisional)
+
+账本口径: ledger.exec_price 取 etf_daily 的【开盘价】(T+1 开盘成交),
+          mark_price 取【收盘价】(当日盯市)。
+          etf_daily.status != 'final' 时该日不进账本, 记入 pending。
+
+
+--------------------------------------------------------------------
+视图层 (3 个, 无存储)
+--------------------------------------------------------------------
+
+v_features_final
+  features_main JOIN index_daily (code='000852.SH' 且 status='final')
+  铁律: 训练/回测/报表只允许读此视图,
+  provisional bar 在机制上接触不到模型。
+
+v_if_ratio
+  从 cffex_rank_raw 的 rank=999 行现算多空比
+  (date, variety, buy_top20, sell_top20, ratio)
+  与物化表 if_sentiment 互为印证。
+
+v_nav
+  从 ledger 派生的净值序列
+  (exec_date, nav, equity, position, daily_ret), 报表/看板直读。
+
+
+--------------------------------------------------------------------
+表间关系总览
+--------------------------------------------------------------------
+raw 层 <- fetch 脚本 (写) -> ingest_log (记)
+raw 层 <- build 脚本 -> derived 层 (重建, build_hash 溯源)
+derived 层 <- run_daily (推理) -> signal_freeze (冻证据) -> ledger (T+1 成交)
+model_files <- 训练流程 (写指纹) -> signal_freeze (引用)
+
+层间用 哈希/日期 引用, 不用外键:
+派生层随时删了重建, 外键会互相拖累。
+依赖方向单向, 任何一层坏了重建不影响其他层。
+
+
+--------------------------------------------------------------------
+实际数据量一览 (2026-10-27 15:45 实测, 以此为准)
+--------------------------------------------------------------------
+table  index_daily           3595 行  2012-01-04 ~ 2026-10-27
+        final 3594 行 (至 2026-10-26) / provisional 1 行 (2026-10-27 盘中快照,
+        未定稿, 不参与训练与信号; 15:10 之后重跑 db_fetch 自动转 final)
+table  etf_daily             2421 行  2016-11-04 ~ 2026-10-27  (512100.SH, 10-27 provisional)
+table  margin_daily          3594 行  2012-01-04 ~ 2026-10-26  (exch='ALL', effective_date = T+1)
+table  market_size_daily    59374 行  2008-01-02 ~ 2026-10-26  (保留 13 个 sgn_code 口径)
+table  cffex_rank_raw        9464 行  2015-02-09 ~ 2026-10-26  (contract='ALL', rank=999 为合计行)
+table  features_main         3594 行  2012-01-04 ~ 2026-10-26  (27 特征 + build_hash)
+table  emotion_panel         3590 行  2012-01-04 ~ 2026-10-20  (33 列; 未随 DB 链路更新,
+                                     策略只用 if_sentiment, 此表仅留档)
+table  if_sentiment          9464 行  2015-02-09 ~ 2026-10-26
+table  ledger                 194 行  2026-01-05 ~ 2026-10-26  (append-only, 期末 nav 1.1449)
+table  signal_freeze          195 行  2025-12-31 ~ 2026-10-26  (invalidated 全 0)
+table  model_files             12 行  pv/slow × seed0~5 (当前只有 2026 年)
+table  ingest_log              15 行
+table  quality_check            0 行  (等自检脚本接库)
+
+view   v_features_final      3594 行
+view   v_if_ratio            9464 行
+view   v_nav                 194 行
+
+文件大小约 13.5 MB (WAL 模式)。备份命令:
+  sqlite3 timing.db "VACUUM INTO 'backup_YYYYMMDD.db'"
+不要直接复制 .db 文件 —— WAL 里可能还有未落盘的事务。
+
+--------------------------------------------------------------------
+维护约定 (2026-10-27 起)
+--------------------------------------------------------------------
+1. 盘中 (15:10 前) 抓到的当日 bar 一律 status='provisional', 只供看板展示;
+   训练 / 回测 / 信号只读 v_features_final, 该视图过滤 status='final'。
+2. 主数据 CSV (input/中证1000_000852.SH.csv) 自 2026-10-27 起冻结, 不再更新;
+   唯一事实来源是 timing.db。core/datafeed.py 默认读 DB, DB 不可用才回落 CSV。
+3. 每日更新走 live/db_update.py --fetch (看板「更新交易」按钮同一条链路):
+   db_fetch 抓数 -> db_build 重建特征 -> 冻结信号 -> 按 ETF 开盘价记账 (同一事务)。
+4. 历史数据被回补/修正后, 需要 live/db_update.py --rebuild-oos 重放账本,
+   否则死区 (deadband) 的路径依赖会让新老账本对不上。

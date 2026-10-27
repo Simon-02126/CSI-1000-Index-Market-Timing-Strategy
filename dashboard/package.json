@@ -1,0 +1,9 @@
+{
+  "name": "timing-dashboard",
+  "private": true,
+  "version": "0.1.1",
+  "description": "中证1000择时数据看板 (只读 timing.db, Node 内置 sqlite)",
+  "scripts": {
+    "dev": "node server.js --port 7100"
+  }
+}

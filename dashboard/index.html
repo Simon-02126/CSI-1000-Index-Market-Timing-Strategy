@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>中证1000择时 · 数据看板</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font: 14px/1.6 "Segoe UI", "Microsoft YaHei", sans-serif; background: #f4f6f9; color: #2c3e50; }
+  header { background: #1f2d3d; color: #fff; padding: 12px max(24px, calc((100% - 1400px) / 2)); display: flex; align-items: baseline; gap: 16px; }
+  header h1 { font-size: 18px; font-weight: 600; }
+  header .meta { color: #9fb3c8; font-size: 12px; }
+  .tabs { display: flex; gap: 4px; margin-left: 24px; }
+  .tabs .tab { padding: 5px 16px; border-radius: 6px 6px 0 0; cursor: pointer; font-size: 13px;
+               color: #9fb3c8; background: rgba(255,255,255,.06); }
+  .tabs .tab:hover { color: #fff; }
+  .tabs .tab.active { background: #f4f6f9; color: #1a6dcc; font-weight: 600; }
+  .wrap { display: flex; min-height: calc(100vh - 53px); max-width: 1400px; margin: 0 auto; width: 100%; }
+  /* 单页视图 (交易更新/收益风险) 限宽居中, 宽屏不留大片右空 */
+  body > #view-trade, body > #view-perf { max-width: 1100px; margin: 0 auto; width: 100%; box-sizing: border-box; }
+  nav { width: 250px; background: #fff; border-right: 1px solid #e3e8ee; padding: 12px; overflow-y: auto; }
+  nav h2 { font-size: 12px; color: #8492a6; margin: 12px 6px 6px; text-transform: uppercase; }
+  nav .item { padding: 8px 10px; border-radius: 6px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  nav .item:hover { background: #f0f4f8; }
+  nav .item.active { background: #eaf2fb; color: #1a6dcc; font-weight: 600; }
+  nav .item .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  nav .item .cnt { font-size: 11px; color: #98a6b5; font-weight: 400; }
+  nav .rng { font-size: 11px; color: #b0bcc9; padding: 0 10px 4px; }
+  main { flex: 1; padding: 20px 24px; overflow-x: auto; }
+  .toolbar { display: flex; gap: 12px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; }
+  .toolbar h3 { font-size: 16px; }
+  .toolbar .desc { color: #7f8c9b; font-size: 12px; }
+  .toolbar .docbtn { background: #fff; color: #1a6dcc; border: 1px solid #bcd4ee; padding: 4px 10px; font-size: 12px; }
+  .toolbar .docbtn:hover { background: #eaf2fb; }
+  .toolbar .docbtn.on { background: #1a6dcc; color: #fff; }
+  select, button { padding: 6px 10px; border: 1px solid #d3dce6; border-radius: 6px; background: #fff; cursor: pointer; font-size: 13px; }
+  button { background: #1a6dcc; color: #fff; border-color: #1a6dcc; }
+  button:hover { background: #155bb0; }
+  table.data { border-collapse: collapse; width: 100%; background: #fff; font-size: 12.5px; }
+  table.data th, table.data td { border: 1px solid #e8edf2; padding: 6px 10px; text-align: left; white-space: nowrap; }
+  table.data th { background: #f7f9fb; position: sticky; top: 0; font-weight: 600; }
+  table.data td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  table.data tr:hover td { background: #f5f9ff; }
+  .empty { color: #98a6b5; padding: 30px; text-align: center; background: #fff; border: 1px dashed #d3dce6; border-radius: 8px; }
+  .err { color: #d64545; }
+
+  /* -------- 交易更新模块 -------- */
+  .cards { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+  .card { background: #fff; border: 1px solid #e3e8ee; border-radius: 8px; padding: 10px 16px; min-width: 130px; }
+  .card .k { font-size: 11px; color: #98a6b5; }
+  .card .v { font-size: 17px; font-weight: 600; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .card .s { font-size: 11px; color: #7f8c9b; margin-top: 2px; }
+  .card.warn .v { color: #d68910; }
+  .upd-bar { display: flex; gap: 14px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; }
+  .upd-bar button.big { font-size: 15px; padding: 10px 28px; }
+  .upd-bar button.big:disabled { background: #98a6b5; border-color: #98a6b5; cursor: wait; }
+  .upd-bar .hint { color: #7f8c9b; font-size: 12px; }
+  #ulog { display: none; background: #1f2d3d; color: #cfe3ff; font: 12px/1.7 Consolas, monospace;
+          padding: 12px 16px; border-radius: 8px; max-height: 260px; overflow-y: auto;
+          white-space: pre-wrap; word-break: break-all; margin-bottom: 16px; }
+  section.blk { margin-bottom: 22px; }
+  section.blk > h3 { font-size: 14px; margin-bottom: 8px; color: #405060; }
+  td.up { color: #1e9e50; } td.dn { color: #d64545; }
+  table.data tr.new td { background: #fff8e6; }
+
+  /* -------- 收益/风险 -------- */
+  .legend { display: flex; gap: 18px; font-size: 12px; color: #7f8c9b; margin-bottom: 6px; }
+  .legend i { display: inline-block; width: 14px; height: 3px; margin-right: 5px; vertical-align: middle; }
+  #view-perf input[type=number] { width: 76px; padding: 4px 8px; }
+  svg.chart { background: #fff; border: 1px solid #e3e8ee; border-radius: 8px; }
+  svg.chart text { font-size: 10px; fill: #98a6b5; }
+
+  /* -------- 表说明抽屉 (默认隐藏, 不影响看数据) -------- */
+  #drawer { position: fixed; top: 0; right: -460px; width: 440px; height: 100vh;
+            background: #fff; box-shadow: -4px 0 18px rgba(0,0,0,.12); z-index: 100;
+            transition: right .22s ease; display: flex; flex-direction: column; }
+  #drawer.open { right: 0; }
+  #drawer .dhead { padding: 14px 18px; border-bottom: 1px solid #e8edf2; display: flex; align-items: baseline; gap: 10px; }
+  #drawer .dhead h2 { font-size: 16px; }
+  #drawer .dhead .en { color: #98a6b5; font-size: 12px; }
+  #drawer .dhead .x { margin-left: auto; border: none; background: none; font-size: 20px; color: #98a6b5; cursor: pointer; padding: 0 6px; }
+  #drawer .dhead .x:hover { color: #2c3e50; }
+  #drawer .dbody { overflow-y: auto; padding: 14px 18px; font-size: 13px; }
+  #drawer .purpose { background: #f4f8fd; border-left: 3px solid #1a6dcc; padding: 8px 12px; border-radius: 0 6px 6px 0; margin-bottom: 10px; }
+  #drawer .io { color: #7f8c9b; font-size: 12px; margin-bottom: 12px; }
+  #drawer table.fields { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  #drawer table.fields th, #drawer table.fields td { border: 1px solid #e8edf2; padding: 5px 8px; text-align: left; vertical-align: top; }
+  #drawer table.fields th { background: #f7f9fb; }
+  #drawer table.fields td.f { white-space: nowrap; font-family: Consolas, monospace; font-size: 12px; color: #155bb0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>中证1000择时 · 数据看板</h1>
+  <div class="tabs">
+    <span class="tab active" data-v="data" onclick="showView('data')">数据浏览</span>
+    <span class="tab" data-v="trade" onclick="showView('trade')">交易更新</span>
+    <span class="tab" data-v="perf" onclick="showView('perf')">收益/风险</span>
+  </div>
+  <span class="meta" id="dbmeta">连接中…</span>
+</header>
+<div class="wrap" id="view-data">
+  <nav id="nav"></nav>
+  <main>
+    <div class="toolbar">
+      <h3 id="tname">选择左侧的表</h3>
+      <span class="desc" id="tdesc"></span>
+      <button class="docbtn" id="docbtn" title="当前表的用途与字段说明 (ESC 关闭)">表说明 ?</button>
+      <span style="flex:1"></span>
+      <label>最近 <select id="n">
+        <option>5</option><option selected>10</option><option>20</option><option>50</option>
+      </select> 行</label>
+      <button id="refresh">刷新</button>
+    </div>
+    <div id="content"><div class="empty">← 从左侧选择一张表开始浏览</div></div>
+  </main>
+</div>
+
+<div id="view-trade" style="display:none; padding: 20px 24px; flex:1; overflow-x:auto;">
+  <div class="cards" id="t-cards"></div>
+  <div class="upd-bar">
+    <button class="big" id="btn-update" onclick="runUpdate()">⟳ 更新交易</button>
+    <span class="hint" id="upd-hint">抓取最新数据 → 按可获取日期对齐 → 生成缺口日信号 → ETF 开盘价成交记账</span>
+  </div>
+  <pre id="ulog"></pre>
+  <section class="blk">
+    <h3>最近信号 (signal_freeze)</h3>
+    <div id="t-signals"><div class="empty">加载中…</div></div>
+  </section>
+  <section class="blk">
+    <h3>成交明细 (ledger, 最新在上, 本次新增高亮)</h3>
+    <div id="t-fills"><div class="empty">加载中…</div></div>
+  </section>
+</div>
+
+<div id="view-perf" style="display:none; padding: 20px 24px; flex:1; overflow-x:auto;">
+  <div class="upd-bar">
+    <span class="hint">样本外 <b id="p-range">—</b> (<span id="p-n">—</span> 个交易日) · 基准 = 512100 满仓持有 · 无风险利率(年化)
+      <input id="rf" type="number" step="0.005" value="0" onchange="loadPerf()"></span>
+    <span class="hint" style="color:#d68910" id="p-warn"></span>
+    <span style="flex:1"></span>
+    <button onclick="loadPerf()">重算</button>
+  </div>
+  <div class="cards" id="p-cards1"></div>
+  <div class="cards" id="p-cards2"></div>
+  <section class="blk"><h3>净值曲线</h3>
+    <div class="legend"><span><i style="background:#1a6dcc"></i>策略(择时)</span>
+      <span><i style="background:#e67e22"></i>满仓512100</span><span><i style="background:#95a5a6"></i>中证1000指数</span></div>
+    <div id="p-nav"></div></section>
+  <section class="blk"><h3>仓位变化 (0~100%)</h3><div id="p-pos"></div></section>
+  <section class="blk"><h3>回撤</h3>
+    <div class="legend"><span><i style="background:#1a6dcc"></i>策略</span><span><i style="background:#e67e22"></i>满仓512100</span></div>
+    <div id="p-dd"></div></section>
+  <section class="blk"><h3>滚动20日年化波动</h3>
+    <div class="legend"><span><i style="background:#1a6dcc"></i>策略</span><span><i style="background:#e67e22"></i>满仓512100</span></div>
+    <div id="p-vol"></div></section>
+  <section class="blk"><h3>日收益分布 (横轴: 日收益%, 纵轴: 天数)</h3>
+    <div class="legend"><span><i style="background:#1a6dcc"></i>策略</span><span><i style="background:#e67e22"></i>满仓512100</span></div>
+    <div id="p-hist"></div></section>
+  <section class="blk"><h3>月度收益 (%)</h3><div id="p-month"></div></section>
+  <section class="blk"><h3>极端行情检验 (中证1000 指数单日涨跌 ≥2% 的日子)</h3><div id="p-extreme"></div></section>
+  <section class="blk"><h3>当日仓位分组 vs 次日ETF收益 (%, 信号区分度)</h3><div id="p-posnext"></div></section>
+</div>
+
+<div id="drawer">
+  <div class="dhead">
+    <h2 id="dcn">表说明</h2><span class="en" id="den"></span>
+    <button class="x" id="dclose" title="关闭">×</button>
+  </div>
+  <div class="dbody">
+    <div class="purpose" id="dpurpose"></div>
+    <div class="io" id="dio"></div>
+    <table class="fields"><thead><tr><th style="width:130px">字段</th><th>说明</th></tr></thead><tbody id="dfields"></tbody></table>
+  </div>
+</div>
+
+<script>
+const INFO = {
+  index_daily:      {cn:'量价主表',      layer:'raw',    desc:'单一事实源, status 状态机隔离盘中bar'},
+  margin_daily:     {cn:'两融表',        layer:'raw',    desc:'trade_date/effective_date 分列, 防未来函数'},
+  market_size_daily:{cn:'市场规模表',    layer:'raw',    desc:'13个口径的总市值/股票数'},
+  cffex_rank_raw:   {cn:'中金所持仓原始表',layer:'raw',  desc:'逐行原样存, 多空比由视图现算'},
+  features_main:   {cn:'入模宽表',      layer:'derived',desc:'模型唯一读取对象(28列), build_hash 溯源'},
+  emotion_panel:    {cn:'情绪面板',      layer:'derived',desc:'33列宽表, 策略用 IF_会员多空比'},
+  if_sentiment:     {cn:'IF多空比派生表', layer:'derived',desc:'live/signals 直查, 与 v_if_ratio 互证'},
+  ledger:           {cn:'模拟盘账本',    layer:'state',  desc:'append-only, T+1开盘成交口径'},
+  signal_freeze:    {cn:'信号冻结',      layer:'state',  desc:'存证据不存结论, 含输入哈希'},
+  model_files:      {cn:'模型注册表',    layer:'state',  desc:'权重路径+指纹, 缺年检测依据'},
+  ingest_log:       {cn:'抓取日志',      layer:'meta',   desc:'每次抓取一行, values_changed 联动重建'},
+  quality_check:    {cn:'日度自检表',    layer:'meta',   desc:'对账/回检结果落表, 红绿灯直读'},
+  v_features_final: {cn:'入模视图(final)',layer:'view',  desc:'训练/回测/报表唯一允许读的视图'},
+  v_if_ratio:       {cn:'多空比视图',    layer:'view',   desc:'从 cffex_rank_raw 现算'},
+  v_nav:            {cn:'净值视图',      layer:'view',   desc:'账本派生的净值序列, 报表直读'},
+};
+
+/* 表说明文档 (与 db/表结构说明.txt 同源) */
+const DOC = {
+index_daily: {purpose:'全部品种日线行情的单一事实源。status 状态机把盘中 provisional bar 与 final bar 隔离, 从机制上杜绝"盘中快照污染训练数据"。',
+io:'写: fetch 脚本 | 读: build 脚本 / as_of 查询',
+fields:[['code','品种代码, 如 000852.SH (PK之一)'],['date','交易日 ISO8601 (PK之一)'],
+['open/high/low/close','开/高/低/收盘价 (指数点位)'],['volume','成交量(股)'],['amount','成交额(元)'],
+['turnover','换手率(%)'],['vwap','均价 = 成交额/成交量, 冗余存便于核对源数据'],
+['status','provisional=盘中快照 / final=定稿; final 永被 provisional 不覆盖 (CHECK约束)'],
+['source','来源通道: eastmoney / baostock / tencent'],['fetched_at','首次抓取时间'],['finalized_at','翻转为 final 的时间; NULL=仍是 provisional']]},
+margin_daily: {purpose:'两融余额时点正确存储。trade_date 与 effective_date 分列, 把"T+1披露"变成查询条件, as_of(T) 接口系统性防未来函数。融资净买入不存(余额差分派生), 避免双口径不一致。',
+io:'写: fetch 脚本 | 读: build 脚本',
+fields:[['date','数据所属交易日 T (PK之一)'],['exch','交易所: SH/SZ/BSE/ALL (PK之一)'],
+['fin_balance','融资余额(元)'],['short_balance','融券余额(元)'],['fin_buy','融资买入额(元)'],
+['effective_date','实际可得交易日 = T+1, as_of 查询的过滤条件'],['source','数据来源'],['fetched_at','抓取时间']]},
+market_size_daily: {purpose:'各板块口径总市值/股票数, 替代 data/市场规模数据.csv。一行一个(日期,口径), 与 DataSgnCode 口径体系对齐。',
+io:'写: fetch 脚本 | 读: build 脚本',
+fields:[['date','交易日 (PK之一)'],['sgn_code','统计口径码 (PK之一): 1=沪股票 2=沪主板A 4=科创板 5=深股票 8=创业板 11=沪深'],
+['sgn_name','口径名冗余存'],['listed_co','上市公司数'],['stock_num','上市股票数 (模型使用)'],
+['total_shares','总股本(亿股)'],['circ_shares','流通股本(亿股)'],['mkt_value','总市值(亿元) (模型使用)'],
+['circ_value','流通市值(亿元)'],['turnover1/2','换手率两个口径(%)'],['effective_date','可得时点(一般=T+1)'],['source','数据来源'],['fetched_at','抓取时间']]},
+cffex_rank_raw: {purpose:'中金所排名表逐行原样存不聚合。IF多空比由视图 v_if_ratio 现算, 合计行 vs rank≤20加总 的口径之争变成一条 SQL。历史导入为聚合行(contract=ALL)。',
+io:'写: fetch 脚本 | 读: v_if_ratio 视图',
+fields:[['date','交易日 (PK之一)'],['variety','品种: IF/IC/IM/IH (PK之一)'],
+['contract','合约代码如 IF2611; 历史聚合导入存 ALL (PK之一)'],['rank','名次 1~20 或 999 合计 (PK之一)'],
+['long_open_interest','持买单量'],['short_open_interest','持卖单量'],['fetched_at','抓取时间 (中金所15:40挂网)']]},
+features_main: {purpose:'模型唯一读取对象(原主数据CSV的28列物化+溯源两列)。数据修正后由 build 脚本整体重建, 不存在"忘了重建"的状态漂移。',
+io:'写: build 脚本 | 读: timing_model (经 v_features_final)',
+fields:[['date','交易日 (PK)'],
+['开盘价/最高价/最低价/收盘价','指数点位'],['换手率(%)/成交量(股)/成交额(元)/均价(元)','量价'],
+['沪市/深市/全市场 融资余额(元)','两融余额'],['全市场融资买入额/净买入额/融券余额(元)','净买入=余额差分物化, 与margin_daily互验'],
+['沪市/深市/全市场 两融余额(元)','两融合计'],['板块上市公司数/上市股票数/总股本/流通股本','规模(数量)'],
+['板块总市值/流通市值(亿元)','市场规模 (sgn=11 沪深口径)'],['板块成交量/成交额/换手率/流通换手率','板块活跃度'],
+['build_hash','当日 raw 行集合(量价+sgn11) 的 sha256 前16位, 溯源用'],['built_at','构建时间']]},
+emotion_panel: {purpose:'33列宽表, 由三张原始情绪表(期权IV/期权统计/期货持仓)按(日期,品种)透视合成。策略当前只用 IF_会员多空比 一列, 整体保留为未来情绪因子留位。',
+io:'写: build 脚本(重建) | 读: signals',
+fields:[['date','交易日 (PK)'],
+['50/300/500ETF_PCR成交','认沽成交量÷认购成交量 (PCR)'],['50/300/500ETF_PCR持仓','认沽持仓量÷认购持仓量'],
+['50/300/500ETF_成交额万元','期权成交额'],['50/300/500ETF_IV平值/虚沽/虚购','隐含波动率三档'],
+['50/300/500ETF_IV沽购比','沽IV÷购IV'],['50/300/500ETF_IV偏斜','虚沽IV−平值IV'],
+['IF/IC/IM/IH_会员多空比','前20会员持买单量÷持卖单量 (策略在用的关键字段)'],
+['前20_持买单量/持卖单量','跨合约加总原始量'],['合约条数/合约数','20×合约个数, 轮换监测(60→80跳变正常)']]},
+if_sentiment: {purpose:'从 cffex_rank_raw 重建的轻表, live/signals 每日直查不用现算。与 v_if_ratio 互为印证(已互验一致)。',
+io:'写: build 脚本 | 读: signals.py',
+fields:[['date','交易日 (PK之一)'],['variety','品种 (PK之一)'],
+['buy_top20','全部合约 rank=999 合计行买单加总'],['sell_top20','卖单加总'],
+['ratio','buy/sell 即 *_会员多空比'],['n_contracts','合约条数 = 20×合约个数']]},
+ledger: {purpose:'模拟盘唯一真相。append-only 一条 INSERT 永不 UPDATE, 错了下一行反向冲销。T+1开盘真实成交口径, 与回测 pos.shift(1) 刻意分开。',
+io:'写: run_daily (append_day) | 读: v_nav / 报表 / 看板',
+fields:[['txn_id','自增主键'],['exec_date','成交日 (T+1)'],['signal_date','信号生成日 (T), 连接 signal_freeze'],
+['target_pos','成交后目标仓位 [0,1]'],['exec_price','成交价=当日开盘价'],['mark_price','收盘盯市价'],
+['position','成交后持仓比例'],['shares','持有份额'],['cash','收盘后现金'],['equity','收盘后总权益'],
+['nav','净值=equity/初始资金'],['daily_ret','当日收益率'],['cost','当日交易成本'],
+['strategy_hash','生成该笔的 strategy.py 参数指纹 (改规则后历史账本能说明是哪套记的)']]},
+signal_freeze: {purpose:'存"证据"不存"结论"——每天信号连同生成它所依赖的数据快照哈希一起冻结, 上游数据修正后可精确判断哪些信号作废(invalidated)。',
+io:'写: run_daily | 读: 审计 / 次日开盘执行',
+fields:[['signal_date','信号日 T (PK)'],['base','三档+5日众数后的基准仓位 {0,0.5,1}'],
+['if_pct','IF 情绪 250 日滚动分位'],['a0','情绪接管后连续仓位 (仅半仓档被替换)'],
+['target_pos','网格+死区后的最终目标仓位'],['input_hash','当日输入数据快照哈希'],
+['model_hash','所用模型指纹 (引用 model_files)'],['frozen_at','冻结时间'],
+['invalidated','0=有效 / 1=上游数据修正后作废']]},
+model_files: {purpose:'model_registry 缺年检测与 --retrain 提示的依据表化。权重本体(.pt)留文件系统, 库里只存路径与指纹。',
+io:'写: 训练流程 | 读: model_registry / signal_freeze',
+fields:[['view','pv(量价视图)/slow(资金视图) (PK之一)'],['year','训练年份 (PK之一)'],
+['seed','s0~s5 (PK之一)'],['file_path','权重文件相对项目根目录路径'],
+['train_window_hash','训练窗口数据指纹, 数据修正后据此提示 --retrain (待回填)'],
+['train_data_end','训练数据末日, 判断当年模型缺不缺 (待回填)'],['trained_at','训练时间(取文件mtime)']]},
+ingest_log: {purpose:'每次抓取一个事务写一行, 让"数据从哪来、有没有改过历史值"可审计。values_changed=1 时联动触发派生层重建/提示重训。',
+io:'写: fetch 脚本 | 读: dashboard / 审计',
+fields:[['ingest_id','自增主键'],['table_name','目标表'],['date_from/date_to','抓取日期范围'],
+['rows_new','新增行数'],['rows_updated','更新行数'],
+['values_changed','抓了老日期但数值有变(源数据修正)->触发重建联动 (0/1)'],
+['check_result','JSON, 本次校验明细(对账误差/越界检测)'],['started_at/finished_at','起止时间']]},
+quality_check: {purpose:'双通道对账/历史回检/跳空检测/两融口径核对的结果从"打印完就丢"变成落库, dashboard 红绿灯直读。',
+io:'写: 自检脚本 | 读: dashboard',
+fields:[['check_id','自增主键'],['run_date','自检运行日'],
+['check_type','cross_source=双通道对账 / playback=回放 / gap=跳空检测 / margin_recon=两融口径核对'],
+['ref_date','被检数据日'],['metric','指标名'],['value','实测值'],['threshold','阈值'],['pass','0/1']]},
+v_features_final: {purpose:'features_main JOIN index_daily (final)。铁律: 训练/回测/报表只允许读此视图, provisional bar 在机制上接触不到模型。',
+io:'视图, 无存储', fields:[['(同 features_main)','仅含 status=final 的交易日']]},
+v_if_ratio: {purpose:'从 cffex_rank_raw 的 rank=999 行现算多空比, 与物化表 if_sentiment 互为印证。',
+io:'视图, 无存储', fields:[['date/variety','交易日/品种'],['buy_top20/sell_top20','合计行买卖加总'],['ratio','多空比']]},
+v_nav: {purpose:'从 ledger 派生的净值序列, 报表/看板直读。',
+io:'视图, 无存储', fields:[['exec_date','成交日'],['nav','净值'],['equity','权益'],['position','持仓'],['daily_ret','日收益']]},
+};
+
+const LAYERS = {raw:'原始层', derived:'派生层', state:'状态层', meta:'元数据层', view:'视图'};
+let cur = null;
+
+function fmt(v) {
+  if (v === null || v === undefined) return '<span style="color:#c0c8d0">NULL</span>';
+  if (typeof v === 'number') {
+    if (Number.isInteger(v)) return v.toLocaleString('zh-CN');
+    return v.toLocaleString('zh-CN', {maximumFractionDigits: 6});
+  }
+  return String(v);
+}
+
+async function loadTables() {
+  const r = await (await fetch('/api/tables')).json();
+  const idx = (r.tables || []).find(t => t.name === 'index_daily');
+  document.getElementById('dbmeta').textContent =
+    `${r.db} (${r.db_size_mb} MB) · ${r.tables.length} 张表/视图 · 数据截止 ${idx?.max ?? '—'}`;
+  const nav = document.getElementById('nav');
+  nav.innerHTML = '';
+  for (const [lk, lt] of Object.entries(LAYERS)) {
+    const tabs = r.tables.filter(t => (INFO[t.name]?.layer || 'other') === lk);
+    if (!tabs.length) continue;
+    const h = document.createElement('h2'); h.textContent = lt; nav.appendChild(h);
+    for (const t of tabs) {
+      const info = INFO[t.name] || {cn: t.name, desc: ''};
+      const div = document.createElement('div');
+      div.className = 'item'; div.dataset.name = t.name;
+      div.innerHTML = `<span class="nm" title="${info.desc}">${info.cn}</span><span class="cnt">${t.rows?.toLocaleString() ?? ''}</span>`;
+      div.onclick = () => select(t.name, div);
+      nav.appendChild(div);
+      if (t.min || t.max) {
+        const rg = document.createElement('div');
+        rg.className = 'rng'; rg.textContent = `${t.min} ~ ${t.max}`;
+        rg.style.display = 'none';
+        nav.appendChild(rg);
+        div._rng = rg;
+      }
+    }
+  }
+}
+
+function select(name, div) {
+  cur = name;
+  document.querySelectorAll('nav .item').forEach(x => x.classList.remove('active'));
+  document.querySelectorAll('nav .rng').forEach(x => x.style.display = 'none');
+  if (div) { div.classList.add('active'); if (div._rng) div._rng.style.display = 'block'; }
+  document.getElementById('tname').textContent = INFO[name]?.cn || name;
+  document.getElementById('tdesc').textContent = INFO[name]?.desc || '';
+  renderDoc(name);
+  loadRows();
+}
+
+function renderDoc(name) {
+  const d = DOC[name];
+  document.getElementById('dcn').textContent = INFO[name]?.cn || name;
+  document.getElementById('den').textContent = name;
+  document.getElementById('dpurpose').textContent = d ? d.purpose : '（暂无说明）';
+  document.getElementById('dio').textContent = d ? d.io : '';
+  document.getElementById('dfields').innerHTML = d
+    ? d.fields.map(([f, t]) => `<tr><td class="f">${f}</td><td>${t}</td></tr>`).join('')
+    : '';
+}
+
+const drawer = document.getElementById('drawer');
+document.getElementById('docbtn').onclick = function () {
+  drawer.classList.toggle('open');
+  this.classList.toggle('on');
+};
+document.getElementById('dclose').onclick = () => {
+  drawer.classList.remove('open');
+  document.getElementById('docbtn').classList.remove('on');
+};
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') document.getElementById('dclose').onclick();
+});
+
+async function loadRows() {
+  if (!cur) return;
+  const n = document.getElementById('n').value;
+  const box = document.getElementById('content');
+  box.innerHTML = '<div class="empty">加载中…</div>';
+  try {
+    const r = await (await fetch(`/api/rows?name=${encodeURIComponent(cur)}&n=${n}`)).json();
+    if (r.error) { box.innerHTML = `<div class="empty err">${r.error}</div>`; return; }
+    if (!r.rows.length) { box.innerHTML = '<div class="empty">（空表）</div>'; return; }
+    let html = '<table class="data"><thead><tr>' + r.cols.map(c => `<th>${c}</th>`).join('') + '</tr></thead><tbody>';
+    for (const row of r.rows) {
+      html += '<tr>' + r.cols.map(c => {
+        const v = row[c];
+        return `<td class="${typeof v === 'number' ? 'num' : ''}">${fmt(v)}</td>`;
+      }).join('') + '</tr>';
+    }
+    box.innerHTML = html + '</tbody></table>';
+  } catch (e) {
+    box.innerHTML = `<div class="empty err">请求失败: ${e}</div>`;
+  }
+}
+
+document.getElementById('n').onchange = loadRows;
+document.getElementById('refresh').onclick = () => { loadTables(); loadRows(); };
+loadTables();
+
+/* ================= 交易更新模块 ================= */
+function showView(v) {
+  document.querySelectorAll('.tabs .tab').forEach(t => t.classList.toggle('active', t.dataset.v === v));
+  document.getElementById('view-data').style.display = v === 'data' ? 'flex' : 'none';
+  document.getElementById('view-trade').style.display = v === 'trade' ? 'block' : 'none';
+  document.getElementById('view-perf').style.display = v === 'perf' ? 'block' : 'none';
+  if (v === 'trade') loadState();
+  if (v === 'perf') loadPerf();
+}
+
+const pct = x => (x === null || x === undefined) ? '—' : (x * 100).toFixed(0) + '%';
+const sgn = (x, d = 2) => (x === null || x === undefined) ? '—'
+  : (x >= 0 ? '+' : '') + Number(x).toLocaleString('zh-CN', { maximumFractionDigits: d });
+
+async function loadState(highlight) {
+  let s;
+  try { s = await (await fetch('/api/state')).json(); }
+  catch (e) { document.getElementById('t-cards').innerHTML = `<div class="empty err">状态加载失败: ${e}</div>`; return; }
+
+  const L = s.ledger_last || {};
+  const pendTxt = s.pending && s.pending.length
+    ? s.pending.map(p => `${p.signal_date} 信号 ${pct(p.target_pos)}`).join('；') : '无';
+  document.getElementById('t-cards').innerHTML = `
+    <div class="card"><div class="k">对齐日 (可生成信号至)</div><div class="v">${s.t_max || '—'}</div>
+      <div class="s">min(指数/IF/两融/规模 可获取日)</div></div>
+    <div class="card"><div class="k">各源最新 (指数 | ETF | IF | 两融 | 规模)</div>
+      <div class="v" style="font-size:13px">${s.src.index || '—'} | ${s.src.etf || '—'} | ${s.src.if || '—'} | ${s.src.margin || '—'} | ${s.src.size || '—'}</div></div>
+    <div class="card ${L.position >= .99 ? '' : 'warn'}"><div class="k">当前仓位 (至 ${L.exec_date || '—'})</div>
+      <div class="v">${pct(L.position)}</div><div class="s">目标 ${pct(L.target_pos)}</div></div>
+    <div class="card"><div class="k">最新净值</div><div class="v">${L.nav ?? '—'}</div>
+      <div class="s">权益 ${L.equity ? Number(L.equity).toLocaleString('zh-CN', {maximumFractionDigits:0}) : '—'} · 日收益 <span class="${(L.daily_ret||0)>=0?'up':'dn'}">${sgn((L.daily_ret||0)*100)}%</span></div></div>
+    <div class="card ${s.pending_count ? 'warn' : ''}"><div class="k">待执行信号 ${s.pending_count} 条</div>
+      <div class="v" style="font-size:13px">${pendTxt}</div>
+      <div class="s">等下一交易日 ETF 定稿后开盘成交</div></div>`;
+
+  // ---- 最近信号
+  const sig = s.last_signals || [];
+  document.getElementById('t-signals').innerHTML = sig.length ? tableHtml(
+    ['信号日', 'base', 'IF分位', 'A0', '目标仓位', '冻结时间'],
+    sig.map(r => [r.signal_date, r.base, r.if_pct?.toFixed?.(4) ?? '—', sgn(r.a0, 4),
+                 pct(r.target_pos), r.frozen_at])) : '<div class="empty">（暂无信号）</div>';
+
+  // ---- 成交明细 (新→旧; highlight=本次新增的成交日集合)
+  const fills = s.last_fills || [];
+  const hl = highlight ? new Set(highlight) : null;
+  const rows = fills.map((r, i) => {
+    const prev = fills[i + 1];
+    const cmd = !prev ? `建仓至 ${pct(r.target_pos)}`
+      : (Math.abs(r.target_pos - prev.target_pos) < 1e-9
+         ? `维持 ${pct(r.target_pos)}` : `调至 ${pct(r.target_pos)}`);
+    const dsh = prev ? r.shares - prev.shares : r.shares;
+    return { cls: (hl && hl.has(r.exec_date)) ? ' class="new"' : '',
+      cells: [r.exec_date, r.signal_date, cmd, r.exec_price?.toFixed(3) ?? '—',
+        (dsh >= 0 ? '+' : '') + Number(dsh).toLocaleString('zh-CN', {maximumFractionDigits:0}),
+        r.cost?.toFixed(2) ?? '—', pct(r.position),
+        Number(r.equity).toLocaleString('zh-CN', {maximumFractionDigits:0}),
+        r.nav?.toFixed(4) ?? '—',
+        `<span class="${(r.daily_ret||0)>=0?'up':'dn'}">${sgn((r.daily_ret||0)*100)}%</span>`] };
+  });
+  document.getElementById('t-fills').innerHTML = rows.length ? rawTableHtml(
+    ['成交日', '信号日', '指令', '成交价', '份额变更', '成本', '持仓', '权益', '净值', '日收益'], rows)
+    : '<div class="empty">（暂无成交）</div>';
+}
+
+function tableHtml(head, rows) {
+  return rawTableHtml(head, rows.map(cells => ({ cells })));
+}
+function rawTableHtml(head, rows) {
+  return '<table class="data"><thead><tr>' + head.map(h => `<th>${h}</th>`).join('')
+    + '</tr></thead><tbody>' + rows.map(r =>
+      `<tr${r.cls || ''}>` + r.cells.map(c => `<td>${c}</td>`).join('') + '</tr>').join('')
+    + '</tbody></table>';
+}
+
+let updating = false;
+async function runUpdate() {
+  if (updating) return;
+  updating = true;
+  const btn = document.getElementById('btn-update');
+  btn.disabled = true; btn.textContent = '⏳ 更新中 (约 1~5 分钟)…';
+  document.getElementById('upd-hint').textContent = '抓取 → 对齐 → 信号 → 记账, 全程单事务, 请勿重复点击';
+  const log = document.getElementById('ulog');
+  log.style.display = 'block'; log.textContent = '启动 python live/db_update.py --fetch ...\n';
+  let j = null, httpErr = '';
+  try {
+    const r = await fetch('/api/update', { method: 'POST' });
+    const txt = await r.text();
+    try { j = JSON.parse(txt); }
+    catch { httpErr = `HTTP ${r.status}, 返回非 JSON: ${txt.slice(0, 300)}`; }
+    if (r.status === 409 && j && j.error) httpErr = j.error;
+  } catch (e) {
+    httpErr = '请求失败 (服务未启动或已断开): ' + e;
+  }
+  // ---- 日志区兜底: 无论哪条失败路径都必须有内容可看
+  const parts = [];
+  if (j && j.log) parts.push(j.log);
+  if (j && j.err) parts.push('[stderr]\n' + j.err);
+  if (j && j.error) parts.push('[服务端错误] ' + j.error);
+  if (j && j.report && j.report.error) parts.push('[链路错误] ' + j.report.error);
+  if (httpErr) parts.push('[请求错误] ' + httpErr);
+  if (j && j.report && j.report.ok === false && !parts.length) parts.push(JSON.stringify(j.report, null, 2));
+  log.textContent = parts.join('\n') || ('未知错误: ' + JSON.stringify(j).slice(0, 300));
+  log.scrollTop = log.scrollHeight;
+  try {
+    if (j && j.report && j.report.ok) {
+      const fills = (j.report.fills || []).map(f => f.exec_date);
+      document.getElementById('upd-hint').textContent =
+        `完成: 冻结 ${j.report.signals_frozen.length} 日信号 · 成交 ${fills.length} 笔`
+        + (j.report.pending.length ? ` · 待执行 ${j.report.pending.length} 笔 (等收盘定稿)` : '')
+        + ` · 净值 ${j.report.nav}`;
+      await loadState(fills);
+    } else {
+      document.getElementById('upd-hint').textContent = '更新失败, 详见上方日志 (深色区域)';
+      await loadState();
+    }
+  } catch (e) {
+    log.textContent += '\n[看板渲染错误] ' + e;
+  } finally {
+    updating = false;
+    btn.disabled = false; btn.textContent = '⟳ 更新交易';
+  }
+}
+
+/* ================= 收益/风险模块 ================= */
+// ---- 轻量 SVG 折线图 (零依赖, 数据<1000点足够)
+function svgLine(elId, series, dates, opts = {}) {
+  const W = opts.w || 980, H = opts.h || 260, PL = 52, PR = 14, PT = 12, PB = 24;
+  let vals = [];
+  series.forEach(s => vals = vals.concat(s.data.filter(v => v !== null)));
+  let lo = opts.ymin !== undefined ? opts.ymin : Math.min(...vals);
+  let hi = opts.ymax !== undefined ? opts.ymax : Math.max(...vals);
+  if (hi - lo < 1e-9) { hi += 1; lo -= 1; }
+  const pad = (hi - lo) * 0.08; lo -= pad; hi += pad;
+  const n = dates.length;
+  const x = i => PL + (W - PL - PR) * (n <= 1 ? 0 : i / (n - 1));
+  const y = v => PT + (H - PT - PB) * (1 - (v - lo) / (hi - lo));
+  const yfmt = opts.yfmt || (v => (v * 100).toFixed(0) + '%');
+  let g = '';
+  for (let k = 0; k <= 4; k++) {
+    const yy = PT + (H - PT - PB) * k / 4, v = hi - (hi - lo) * k / 4;
+    g += `<line x1="${PL}" y1="${yy}" x2="${W - PR}" y2="${yy}" stroke="#edf1f5"/>
+        <text x="${PL - 6}" y="${yy + 3}" text-anchor="end">${yfmt(v)}</text>`;
+  }
+  [0, Math.floor(n / 2), n - 1].forEach(i => {
+    g += `<text x="${x(i)}" y="${H - 6}" text-anchor="middle">${(dates[i] || '').slice(5)}</text>`;
+  });
+  series.forEach(s => {
+    let d = '', pen = false;
+    s.data.forEach((v, i) => {
+      if (v === null) { pen = false; return; }
+      d += (pen ? 'L' : 'M') + x(i).toFixed(1) + ',' + y(v).toFixed(1);
+      pen = true;
+    });
+    g += `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="1.8"${s.dash ? ' stroke-dasharray="5,4"' : ''}/>`;
+  });
+  if (opts.hline !== undefined) {
+    g += `<line x1="${PL}" y1="${y(opts.hline)}" x2="${W - PR}" y2="${y(opts.hline)}" stroke="#d3dce6" stroke-dasharray="3,3"/>`;
+  }
+  document.getElementById(elId).innerHTML =
+    `<svg class="chart" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${g}</svg>`;
+}
+
+function svgArea(elId, data, dates, opts = {}) {
+  const W = opts.w || 980, H = opts.h || 110, PL = 52, PR = 14, PT = 8, PB = 20;
+  const lo = 0, hi = 1.15;
+  const n = dates.length;
+  const x = i => PL + (W - PL - PR) * (n <= 1 ? 0 : i / (n - 1));
+  const y = v => PT + (H - PT - PB) * (1 - (v - lo) / (hi - lo));
+  let dline = '', pen = false;
+  data.forEach((v, i) => {
+    if (v === null) { pen = false; return; }
+    dline += (pen ? 'L' : 'M') + x(i).toFixed(1) + ',' + y(v).toFixed(1); pen = true;
+  });
+  const lastX = x(n - 1).toFixed(1);
+  document.getElementById(elId).innerHTML =
+    `<svg class="chart" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
+      <line x1="${PL}" y1="${y(1)}" x2="${W - PR}" y2="${y(1)}" stroke="#edf1f5"/>
+      <line x1="${PL}" y1="${y(0.5)}" x2="${W - PR}" y2="${y(0.5)}" stroke="#edf1f5"/>
+      <text x="${PL - 6}" y="${y(1) + 3}" text-anchor="end">100%</text>
+      <text x="${PL - 6}" y="${y(0.5) + 3}" text-anchor="end">50%</text>
+      <text x="${PL - 6}" y="${y(0) + 3}" text-anchor="end">0%</text>
+      <path d="${dline}L${lastX},${y(0)}L${x(0)},${y(0)}Z" fill="#1a6dcc" fill-opacity="0.18"/>
+      <path d="${dline}" fill="none" stroke="#1a6dcc" stroke-width="1.5"/>
+      <text x="${x(0)}" y="${H - 4}" text-anchor="middle">${(dates[0] || '').slice(5)}</text>
+      <text x="${lastX}" y="${H - 4}" text-anchor="middle">${(dates[n - 1] || '').slice(5)}</text>
+    </svg>`;
+}
+
+function svgHist(elId, hist, opts = {}) {
+  const W = opts.w || 980, H = opts.h || 240, PL = 40, PR = 14, PT = 12, PB = 34;
+  const maxC = Math.max(...hist.strat, ...hist.bench, 1);
+  const bw = (W - PL - PR) / hist.bins.length;
+  const y = c => PT + (H - PT - PB) * (1 - c / (maxC * 1.1));
+  let g = '';
+  for (let k = 0; k <= 3; k++) {
+    const yy = PT + (H - PT - PB) * k / 3;
+    g += `<line x1="${PL}" y1="${yy}" x2="${W - PR}" y2="${yy}" stroke="#edf1f5"/>`;
+  }
+  hist.bins.forEach((b, i) => {
+    const x0 = PL + i * bw;
+    const h1 = H - PB - y(hist.strat[i]), h2 = H - PB - y(hist.bench[i]);
+    g += `<rect x="${(x0 + bw * 0.08).toFixed(1)}" y="${(y(hist.strat[i])).toFixed(1)}" width="${(bw * 0.38).toFixed(1)}" height="${h1.toFixed(1)}" fill="#1a6dcc" fill-opacity="0.85"/>`;
+    g += `<rect x="${(x0 + bw * 0.52).toFixed(1)}" y="${(y(hist.bench[i])).toFixed(1)}" width="${(bw * 0.38).toFixed(1)}" height="${h2.toFixed(1)}" fill="#e67e22" fill-opacity="0.75"/>`;
+    if (i % 4 === 0) g += `<text x="${(x0 + bw / 2).toFixed(1)}" y="${H - 18}" text-anchor="middle">${(b * 100).toFixed(1)}</text>`;
+  });
+  g += `<text x="${W / 2}" y="${H - 4}" text-anchor="middle">日收益 (%)</text>`;
+  document.getElementById(elId).innerHTML =
+    `<svg class="chart" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${g}</svg>`;
+}
+
+const pCard = (k, v, s, warn) =>
+  `<div class="card${warn ? ' warn' : ''}"><div class="k">${k}</div><div class="v">${v}</div><div class="s">${s || ''}</div></div>`;
+const pPct = x => (x === null || x === undefined) ? '—' : (x * 100).toFixed(2) + '%';
+const pCls = x => x >= 0 ? 'up' : 'dn';
+
+async function loadPerf() {
+  const rf = document.getElementById('rf').value || '0';
+  let j;
+  try { j = await (await fetch('/api/perf?rf=' + encodeURIComponent(rf))).json(); }
+  catch (e) { document.getElementById('p-cards1').innerHTML = `<div class="empty err">加载失败: ${e}</div>`; return; }
+  if (j.error) { document.getElementById('p-cards1').innerHTML = `<div class="empty err">${j.error}</div>`; return; }
+  const m = j.metrics, e = j.excess, b = j.bench_metrics, x = j.extreme;
+  document.getElementById('p-range').textContent = `${m.from} ~ ${m.to}`;
+  document.getElementById('p-n').textContent = m.n_days;
+  document.getElementById('p-warn').textContent =
+    `⚠ 样本仅 ${m.n_days} 个交易日 (${(m.n_days / 252).toFixed(1)} 年), 指标统计意义有限`;
+
+  document.getElementById('p-cards1').innerHTML =
+    pCard('累计收益', `<span class="${pCls(m.total)}">${pPct(m.total)}</span>`, `基准 ${pPct(b.total)}`) +
+    pCard('年化收益', pPct(m.ann_ret), `年化波动 ${pPct(m.vol)}`) +
+    pCard('夏普', m.sharpe.toFixed(2), `Sortino ${m.sortino.toFixed(2)} · Calmar ${m.calmar.toFixed(2)}`) +
+    pCard('最大回撤', pPct(m.mdd), m.mdd_date || '', true) +
+    pCard('日胜率', pPct(m.win_rate), `最长连亏 ${m.max_lose_streak} 天`) +
+    pCard('VaR95 / ES95 (日)', `${m.var95.toFixed(2)}% / ${m.es95.toFixed(2)}%`, '历史分位口径');
+
+  document.getElementById('p-cards2').innerHTML =
+    pCard('超额累计 (vs满仓ETF)', `<span class="${pCls(e.total)}">${pPct(e.total)}</span>`, '择时的核心价值') +
+    pCard('年化超额', pPct(e.ann), `信息比率 IR ${e.ir === null ? '—' : e.ir.toFixed(2)}`) +
+    pCard('超额最大回撤', pPct(e.mdd), e.mdd_date || '', true) +
+    pCard('基准最大回撤', pPct(b.mdd), b.mdd_date || '', true) +
+    pCard('交易成本', m.cost.toFixed(0) + ' 元', `调仓 ${m.n_trades} 次 · 单边换手 ${m.turnover.toFixed(1)}x`) +
+    pCard('当前仓位', pPct(j.pos[j.pos.length - 1]), j.dates[j.dates.length - 1]);
+
+  svgLine('p-nav', [
+    { data: j.nav, color: '#1a6dcc' },
+    { data: j.bench_nav, color: '#e67e22' },
+    { data: j.idx_nav, color: '#95a5a6', dash: true },
+  ], j.dates, { yfmt: v => v.toFixed(2) + 'x' });
+  svgArea('p-pos', j.pos, j.dates);
+  svgLine('p-dd', [
+    { data: j.dd, color: '#1a6dcc' },
+    { data: j.bench_dd, color: '#e67e22' },
+  ], j.dates, { ymax: 0.02, hline: 0 });
+  svgLine('p-vol', [
+    { data: j.roll20, color: '#1a6dcc' },
+    { data: j.bench_roll20, color: '#e67e22' },
+  ], j.dates, { yfmt: v => (v * 100).toFixed(0) + '%' });
+  svgHist('p-hist', j.hist);
+
+  document.getElementById('p-month').innerHTML = tableHtml(
+    ['月份', '策略', '满仓512100', '超额'],
+    j.monthly.map(mm => [`${mm.m}`,
+      `<span class="${pCls(mm.strat)}">${(mm.strat * 100).toFixed(1)}</span>`,
+      `<span class="${pCls(mm.bench)}">${(mm.bench * 100).toFixed(1)}</span>`,
+      `<span class="${pCls(mm.strat - mm.bench)}">${((mm.strat - mm.bench) * 100).toFixed(1)}</span>`]));
+
+  document.getElementById('p-extreme').innerHTML = tableHtml(
+    ['情形', '天数', '中证1000当日均涨跌', '策略当日均涨跌', '效果'],
+    [['大跌日 (≤-2%)', x.down_n,
+      `<span class="dn">${x.down_idx === null ? '—' : x.down_idx.toFixed(2) + '%'}</span>`,
+      `<span class="${pCls(-1)}">${x.down_strat === null ? '—' : x.down_strat.toFixed(2) + '%'}</span>`,
+      x.down_idx === null ? '—' : `少跌 ${(x.down_idx - x.down_strat).toFixed(2)}pct`],
+     ['大涨日 (≥+2%)', x.up_n,
+      `<span class="up">${x.up_idx === null ? '—' : x.up_idx.toFixed(2) + '%'}</span>`,
+      `<span class="up">${x.up_strat === null ? '—' : x.up_strat.toFixed(2) + '%'}</span>`,
+      x.up_idx === null ? '—' : `捕获 ${x.up_strat === null ? '—' : (x.up_strat / x.up_idx * 100).toFixed(0) + '%'}`]]);
+
+  const names = ['低仓位 (0~30%)', '中仓位 (30~70%)', '高仓位 (70~100%)'];
+  document.getElementById('p-posnext').innerHTML = tableHtml(
+    ['当日收盘仓位', '天数', '次日ETF平均收益%'],
+    j.pos_next.map((p, i) => [names[i], p.n,
+      p.avg === null ? '—' : `<span class="${pCls(p.avg)}">${p.avg.toFixed(3)}</span>`]));
+}
+</script>
+</body>
+</html>
