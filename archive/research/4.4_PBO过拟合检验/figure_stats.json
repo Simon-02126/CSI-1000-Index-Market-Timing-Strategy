@@ -1,0 +1,16 @@
+{
+  "param": {
+    "pbo": 0.1188,
+    "rank_median": 0.8913,
+    "below": 0.0007,
+    "is_sharpe_mean": 1.54,
+    "oos_sharpe_mean": 1.097
+  },
+  "struct": {
+    "pbo": 0.2967,
+    "rank_median": 0.9308,
+    "below": 0.0,
+    "is_sharpe_mean": 1.436,
+    "oos_sharpe_mean": 0.81
+  }
+}
